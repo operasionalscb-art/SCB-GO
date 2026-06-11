@@ -1,0 +1,96 @@
+{
+  "entities": {
+    "Vehicle": {
+      "title": "Vehicle",
+      "description": "School operational vehicle data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "plateNo": { "type": "string" },
+        "capacity": { "type": "integer" },
+        "status": { "type": "string", "enum": ["active", "repair", "unavailable"] },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "plateNo", "capacity", "status"]
+    },
+    "Request": {
+      "title": "Request",
+      "description": "Vehicle booking requests",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "vehicleId": { "type": "string" },
+        "vehicleName": { "type": "string" },
+        "startDate": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endDate": { "type": "string" },
+        "endTime": { "type": "string" },
+        "startAt": { "type": "string", "format": "date-time" },
+        "endAt": { "type": "string", "format": "date-time" },
+        "pic": { "type": "string" },
+        "activity": { "type": "string" },
+        "passengerCount": { "type": "integer" },
+        "passengers": { "type": "array" },
+        "destination": { "type": "string" },
+        "additionalNotes": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "completed"] },
+        "rejectionReason": { "type": "string" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "vehicleId", "startDate", "startTime", "endDate", "endTime", "pic", "activity", "passengerCount", "destination", "status", "userId", "userEmail", "createdAt", "updatedAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "User profile and permission role mapping",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["superadmin", "admin", "user"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "email", "name", "role", "updatedAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app real-time notification",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "title", "message", "read", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/vehicles/{vehicleId}": {
+      "schema": "Vehicle",
+      "description": "Store operational vehicles"
+    },
+    "/requests/{requestId}": {
+      "schema": "Request",
+      "description": "Store operational vehicle usage requests"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Store user profiles and access roles"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "Store user real-time notifications"
+    }
+  }
+}

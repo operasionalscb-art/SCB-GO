@@ -1,0 +1,117 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Help Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSuperAdminEmail(email) {
+      return email == "operasional.scb@gmail.com";
+    }
+
+    function getUserRole(userId) {
+      return get(/databases/$(database)/documents/users/$(userId)).data.role;
+    }
+
+    function isSuperadmin(userId) {
+      return isSignedIn() && (
+        isSuperAdminEmail(request.auth.token.email) || 
+        (exists(/databases/$(database)/documents/users/$(userId)) && getUserRole(userId) == "superadmin")
+      );
+    }
+
+    function isAdmin(userId) {
+      return isSignedIn() && (
+        isSuperadmin(userId) || 
+        (exists(/databases/$(database)/documents/users/$(userId)) && getUserRole(userId) == "admin")
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // VEHICLES collection
+    match /vehicles/{vehicleId} {
+      allow read: if isSignedIn();
+      allow create: if isAdmin(request.auth.uid) && isValidId(vehicleId) && isValidVehicle(request.resource.data);
+      allow update: if isAdmin(request.auth.uid) && isValidVehicle(request.resource.data);
+      allow delete: if isAdmin(request.auth.uid);
+    }
+
+    function isValidVehicle(data) {
+      return data.keys().hasAll(['id', 'name', 'type', 'plateNo', 'capacity', 'status', 'description', 'createdAt', 'updatedAt'])
+          && data.keys().size() == 9
+          && data.id is string && data.id.size() <= 128
+          && data.name is string && data.name.size() <= 200
+          && data.type is string && data.type.size() <= 100
+          && data.plateNo is string && data.plateNo.size() <= 50
+          && data.capacity is int && data.capacity > 0 && data.capacity <= 1000
+          && data.status is string && (data.status == 'active' || data.status == 'repair' || data.status == 'unavailable')
+          && data.description is string && data.description.size() <= 1000;
+    }
+
+    // REQUESTS collection
+    match /requests/{requestId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(requestId) && isValidRequest(request.resource.data) && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && (
+        isAdmin(request.auth.uid) ||
+        (request.resource.data.userId == request.auth.uid && resource.data.status == 'pending' && isValidRequest(request.resource.data))
+      );
+      allow delete: if isAdmin(request.auth.uid) || (resource.data.userId == request.auth.uid && resource.data.status == 'pending');
+    }
+
+    function isValidRequest(data) {
+      return data.keys().hasAll(['id', 'vehicleId', 'vehicleName', 'startDate', 'startTime', 'endDate', 'endTime', 'startAt', 'endAt', 'pic', 'activity', 'passengerCount', 'passengers', 'destination', 'additionalNotes', 'status', 'rejectionReason', 'userId', 'userEmail', 'userName', 'createdAt', 'updatedAt'])
+          && data.id is string && data.id.size() <= 128
+          && data.vehicleId is string && data.vehicleId.size() <= 128
+          && data.vehicleName is string
+          && data.startDate is string
+          && data.startTime is string
+          && data.endDate is string
+          && data.endTime is string
+          && data.pic is string && data.pic.size() <= 200
+          && data.activity is string && data.activity.size() <= 1000
+          && data.passengerCount is int && data.passengerCount >= 0
+          && data.passengers is list && data.passengers.size() <= 200
+          && data.destination is string && data.destination.size() <= 500
+          && data.additionalNotes is string && data.additionalNotes.size() <= 2000
+          && data.status is string && (data.status == 'pending' || data.status == 'approved' || data.status == 'rejected' || data.status == 'completed')
+          && data.rejectionReason is string && data.rejectionReason.size() <= 1000
+          && data.userId is string
+          && data.userEmail is string;
+    }
+
+    // USERS collection
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin(request.auth.uid));
+      allow create, update: if isSignedIn() && (
+        isSuperadmin(request.auth.uid) || (
+          request.auth.uid == userId && (
+            (isSuperAdminEmail(request.auth.token.email) && request.resource.data.role == 'superadmin') ||
+            (!isSuperAdminEmail(request.auth.token.email) && request.resource.data.role == 'user')
+          ) && request.resource.data.keys().hasAll(['id', 'email', 'name', 'role', 'updatedAt'])
+            && request.resource.data.keys().size() == 5
+            && request.resource.data.id == userId
+            && request.resource.data.email == request.auth.token.email
+        )
+      );
+    }
+
+    // NOTIFICATIONS collection
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+  }
+}
