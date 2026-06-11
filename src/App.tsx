@@ -65,6 +65,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [loginError, setLoginError] = useState<string | null>(null);
 
   // Database Synchronizations
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -197,12 +198,39 @@ export default function App() {
   // Google Login popup trigger
   const handleLoginGoogle = async () => {
     setAuthLoading(true);
+    setLoginError(null);
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Gagal login Google Account: ", err);
-      alert("Gagal melakukan login. Silakan coba kembali.");
+      if (err?.code === "auth/unauthorized-domain") {
+        setLoginError(
+          `Domain (${window.location.hostname}) belum diotorisasi di Firebase Console Anda.\n\n` +
+          `Langkah Perbaikan:\n` +
+          `1. Buka Firebase Console -> https://console.firebase.google.com/\n` +
+          `2. Buka project (vast-summit-scf5x)\n` +
+          `3. Navigasi ke Authentication -> Settings (Setelan) -> Authorized Domains (Domain yang diizinkan)\n` +
+          `4. Klik 'Add domain' dan masukkan domain berikut:\n` +
+          `   ${window.location.hostname}`
+        );
+      } else if (err?.code === "auth/operation-not-allowed") {
+        setLoginError(
+          "Metode masuk Google belum diaktifkan di Firebase Console.\n\n" +
+          "Langkah Perbaikan:\n" +
+          "1. Buka Firebase Console -> Authentication -> Sign-in method\n" +
+          "2. Tambahkan penyedia login baru, pilih 'Google', lalu klik Aktifkan."
+        );
+      } else if (err?.code === "auth/popup-blocked") {
+        setLoginError(
+          "Popup login diblokir oleh browser Anda.\n\n" +
+          "Silakan klik ikon gembok/popup di dekat kolom alamat (address bar) browser Anda untuk mengizinkan popup dari situs ini, kemudian coba masuk kembali."
+        );
+      } else if (err?.code === "auth/popup-closed-by-user") {
+        setLoginError("Proses masuk dibatalkan karena jendela login ditutup pengguna.");
+      } else {
+        setLoginError(err?.message || "Gagal melakukan login. Silakan coba kembali nanti.");
+      }
     } finally {
       setAuthLoading(false);
     }
@@ -566,6 +594,16 @@ export default function App() {
               </svg>
               Masuk Dengan Akun Google
             </button>
+
+            {loginError && (
+              <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-xl text-left text-[11px] text-red-700 font-medium whitespace-pre-wrap leading-relaxed shrink-0">
+                <div className="flex items-center gap-2 mb-1.5 text-red-800 font-bold">
+                  <span className="shrink-0 text-red-600">⚠️</span>
+                  <span>Detail Error Login:</span>
+                </div>
+                {loginError}
+              </div>
+            )}
 
             <div className="mt-8 text-left space-y-3">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Fitur Utama</span>
