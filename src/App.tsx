@@ -6,8 +6,9 @@ import {
   OperationType 
 } from "./firebase";
 import { 
-  GoogleAuthProvider, 
-  signInWithPopup, 
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
   signOut, 
   onAuthStateChanged 
 } from "firebase/auth";
@@ -66,12 +67,28 @@ export default function App() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [isRegisterMode, setIsRegisterMode] = useState(false);
 
   // Database Synchronizations
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [requests, setRequests] = useState<VehicleRequest[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [notifications, setNotifications] = useState<InAppNotification[]>([]);
+  const [searchEmail, setSearchEmail] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem("guest_booking_emails");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed[0] || "";
+        }
+      }
+    } catch (_) {}
+    return "";
+  });
 
   // Navigation & Interactivity states
   const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
@@ -134,10 +151,8 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // 2. Hydrate Database Collections once signed in
+  // 2. Hydrate Database Collections (Vehicles & Requests are public, Users & Notifications are auth-specific)
   useEffect(() => {
-    if (!currentUser) return;
-
     // A. Vehicles Real-Time Listener
     const unsubVehicles = onSnapshot(collection(db, "vehicles"), (snap) => {
       const list: Vehicle[] = [];
@@ -156,32 +171,40 @@ export default function App() {
       handleFirestoreError(error, OperationType.LIST, "requests");
     });
 
-    // C. Users Listener (visible for admins / super admins only)
-    const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
-      const list: UserProfile[] = [];
-      snap.forEach((d) => list.push(d.data() as UserProfile));
-      setUsers(list);
-    }, (error) => {
-      console.warn("User collection sync skip (expected for non-admins): ", error.message);
-    });
+    let unsubUsers = () => {};
+    let unsubNotifications = () => {};
 
-    // D. Notifications Sync (Specific to this user)
-    const qNotifications = query(
-      collection(db, "notifications"),
-      where("userId", "==", currentUser.uid)
-    );
-    const unsubNotifications = onSnapshot(qNotifications, (snap) => {
-      const list: InAppNotification[] = [];
-      snap.forEach((d) => {
-        const data = d.data();
-        list.push({ id: d.id, ...data } as InAppNotification);
+    if (currentUser) {
+      // C. Users Listener (visible for admins / super admins only)
+      unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
+        const list: UserProfile[] = [];
+        snap.forEach((d) => list.push(d.data() as UserProfile));
+        setUsers(list);
+      }, (error) => {
+        console.warn("User collection sync skip (expected for non-admins): ", error.message);
       });
-      // Sort in-app notifications descending
-      list.sort((a, b) => toDateValue(b.createdAt).getTime() - toDateValue(a.createdAt).getTime());
-      setNotifications(list);
-    }, (error) => {
-      console.warn("Notification listener error: ", error.message);
-    });
+
+      // D. Notifications Sync (Specific to this user)
+      const qNotifications = query(
+        collection(db, "notifications"),
+        where("userId", "==", currentUser.uid)
+      );
+      unsubNotifications = onSnapshot(qNotifications, (snap) => {
+        const list: InAppNotification[] = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          list.push({ id: d.id, ...data } as InAppNotification);
+        });
+        // Sort in-app notifications descending
+        list.sort((a, b) => toDateValue(b.createdAt).getTime() - toDateValue(a.createdAt).getTime());
+        setNotifications(list);
+      }, (error) => {
+        console.warn("Notification listener error: ", error.message);
+      });
+    } else {
+      setNotifications([]);
+      setUsers([]);
+    }
 
     return () => {
       unsubVehicles();
@@ -195,41 +218,62 @@ export default function App() {
   const isSuperadmin = userProfile?.role === "superadmin" || currentUser?.email === "operasional.scb@gmail.com";
   const isAdminRole = isSuperadmin || userProfile?.role === "admin";
 
-  // Google Login popup trigger
-  const handleLoginGoogle = async () => {
+  // Email & Password Authentication Handler
+  const handleEmailAuth = async (e: any) => {
+    e.preventDefault();
+    if (!loginEmail || !loginPassword) {
+      setLoginError("Email dan Password harus diisi.");
+      return;
+    }
     setAuthLoading(true);
     setLoginError(null);
     try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-    } catch (err: any) {
-      console.error("Gagal login Google Account: ", err);
-      if (err?.code === "auth/unauthorized-domain") {
-        setLoginError(
-          `Domain (${window.location.hostname}) belum diotorisasi di Firebase Console Anda.\n\n` +
-          `Langkah Perbaikan:\n` +
-          `1. Buka Firebase Console -> https://console.firebase.google.com/\n` +
-          `2. Buka project (vast-summit-scf5x)\n` +
-          `3. Navigasi ke Authentication -> Settings (Setelan) -> Authorized Domains (Domain yang diizinkan)\n` +
-          `4. Klik 'Add domain' dan masukkan domain berikut:\n` +
-          `   ${window.location.hostname}`
-        );
-      } else if (err?.code === "auth/operation-not-allowed") {
-        setLoginError(
-          "Metode masuk Google belum diaktifkan di Firebase Console.\n\n" +
-          "Langkah Perbaikan:\n" +
-          "1. Buka Firebase Console -> Authentication -> Sign-in method\n" +
-          "2. Tambahkan penyedia login baru, pilih 'Google', lalu klik Aktifkan."
-        );
-      } else if (err?.code === "auth/popup-blocked") {
-        setLoginError(
-          "Popup login diblokir oleh browser Anda.\n\n" +
-          "Silakan klik ikon gembok/popup di dekat kolom alamat (address bar) browser Anda untuk mengizinkan popup dari situs ini, kemudian coba masuk kembali."
-        );
-      } else if (err?.code === "auth/popup-closed-by-user") {
-        setLoginError("Proses masuk dibatalkan karena jendela login ditutup pengguna.");
+      if (isRegisterMode) {
+        if (!displayName.trim()) {
+          setLoginError("Nama lengkap wajib diisi untuk registrasi baru.");
+          setAuthLoading(false);
+          return;
+        }
+        // Create user with email and password
+        const userCred = await createUserWithEmailAndPassword(auth, loginEmail, loginPassword);
+        
+        // Update profile display name
+        await updateProfile(userCred.user, {
+          displayName: displayName
+        });
+
+        // Setup the database user profile synchronously 
+        const userRef = doc(db, "users", userCred.user.uid);
+        const isSuper = loginEmail === "operasional.scb@gmail.com";
+        const initialRole: UserRole = isSuper ? "superadmin" : "user";
+        
+        const newProfile: UserProfile = {
+          id: userCred.user.uid,
+          email: loginEmail,
+          name: displayName,
+          role: initialRole,
+          updatedAt: new Date()
+        };
+        await setDoc(userRef, newProfile);
+        setUserProfile(newProfile);
       } else {
-        setLoginError(err?.message || "Gagal melakukan login. Silakan coba kembali nanti.");
+        // Sign in standard
+        await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
+      }
+    } catch (err: any) {
+      console.error("Gagal autentikasi email: ", err);
+      if (err?.code === "auth/email-already-in-use") {
+        setLoginError("Alamat email sudah terdaftar di sistem.");
+      } else if (err?.code === "auth/invalid-email") {
+        setLoginError("Format alamat email salah.");
+      } else if (err?.code === "auth/weak-password") {
+        setLoginError("Kata sandi terlalu pendek (minimal 6 karakter).");
+      } else if (err?.code === "auth/wrong-password" || err?.code === "auth/user-not-found" || err?.code === "auth/invalid-credential") {
+        setLoginError("Kombinasi email atau kata sandi salah. Silakan periksa kembali.");
+      } else if (err?.code === "auth/operation-not-allowed") {
+        setLoginError("Autentikasi Email/Password belum diaktifkan di setelan Firebase Auth Anda.");
+      } else {
+        setLoginError(err?.message || "Gagal melakukan autentikasi. Silakan coba sebentar lagi.");
       }
     } finally {
       setAuthLoading(false);
@@ -285,12 +329,20 @@ export default function App() {
     try {
       await setDoc(reqRef, finalPayload);
       
-      // Notify inside app
-      await triggerNotification(
-        currentUser.uid, 
-        "Pengajuan Terkirim", 
-        `Pengajuan penggunaan ${reqPayload.vehicleName} berhasil didaftarkan.`
-      );
+      // Notify inside app if logged-in
+      if (currentUser) {
+        await triggerNotification(
+          currentUser.uid, 
+          "Pengajuan Terkirim", 
+          `Pengajuan penggunaan ${reqPayload.vehicleName} berhasil didaftarkan.`
+        );
+      } else if (reqPayload.userEmail) {
+        // Save email locally for guest tracking
+        try {
+          localStorage.setItem("guest_booking_emails", JSON.stringify([reqPayload.userEmail]));
+          setSearchEmail(reqPayload.userEmail);
+        } catch (_) {}
+      }
 
       // Notify Admins
       await notifyAdmins(
@@ -567,9 +619,9 @@ export default function App() {
               <div className="flex items-start gap-3">
                 <ShieldAlert className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
                 <div>
-                  <h4 className="text-xs font-bold text-slate-700">Akses Terproteksi Akun Google</h4>
+                  <h4 className="text-xs font-bold text-slate-700">Autentikasi Akun Aman</h4>
                   <p className="text-[11px] text-slate-500 leading-normal font-medium mt-0.5">
-                    Gunakan alamat surat elektronik (Gmail) resmi Anda untuk mengakses sistem pengajuan kendaraan operasional.
+                    Gunakan alamat surel dan kata sandi Anda untuk mengakses sistem peminjaman & jadwal kendaraan operasional Sekolah Cendekia BAZNAS.
                   </p>
                 </div>
               </div>
@@ -577,29 +629,86 @@ export default function App() {
           </div>
 
           {/* Login Control Card */}
-          <div className="bg-gradient-to-br from-slate-50 to-blue-50/50 rounded-2xl border border-slate-150 p-6 flex flex-col justify-center text-center">
-            <h3 className="font-display font-bold text-slate-800 text-xl">Silakan Masuk</h3>
-            <p className="text-xs text-slate-400 mt-1 font-semibold">Gunakan Akun Google Sekolah (Gmail)</p>
+          <div className="bg-gradient-to-br from-slate-50 to-blue-50/50 rounded-2xl border border-slate-150 p-6 flex flex-col justify-center">
+            <h3 className="font-display font-bold text-slate-800 text-xl text-center">
+              {isRegisterMode ? "Daftar Akun Baru" : "Silakan Masuk"}
+            </h3>
+            <p className="text-xs text-slate-400 mt-1 font-semibold text-center mb-6">
+              {isRegisterMode ? "Isi data diri untuk registrasi akun" : "Masuk menggunakan email & kata sandi Anda"}
+            </p>
 
-            <button
-              onClick={handleLoginGoogle}
-              className="mt-8 flex items-center justify-center gap-3 w-full py-3.5 bg-white border border-slate-200 text-slate-700 font-bold text-xs rounded-2xl shadow-xs hover:bg-slate-50 hover:shadow-sm transition-all cursor-pointer"
-            >
-              {/* Google SVG Icon */}
-              <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
-                <path
-                  fill="#EA4335"
-                  d="M12.24 10.285V14.4h6.887c-.275 1.565-1.88 4.604-6.887 4.604-4.33 0-7.859-3.578-7.859-8s3.529-8 7.859-8c2.46 0 4.105 1.025 5.047 1.926l3.227-3.116C18.22 1.91 15.44 1 12.24 1 5.955 1 1 5.955 1 12.24s4.955 11.24 11.24 11.24c6.558 0 10.92-4.615 10.92-11.115 0-.749-.074-1.32-.174-1.885h-10.746z"
+            <form onSubmit={handleEmailAuth} className="space-y-4 text-left">
+              {isRegisterMode && (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                    Nama Lengkap
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    placeholder="Contoh: Ahmad Fauzi"
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-blue-500 outline-none transition-all placeholder:text-slate-350"
+                  />
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                  Alamat Email (Surel)
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  placeholder="contoh@gmail.com"
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-blue-500 outline-none transition-all placeholder:text-slate-350"
                 />
-              </svg>
-              Masuk Dengan Akun Google
-            </button>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                  Kata Sandi (Password)
+                </label>
+                <input
+                  type="password"
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-blue-500 outline-none transition-all placeholder:text-slate-350"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-sm transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-2 mt-2"
+              >
+                <LogIn className="w-4 h-4" />
+                {isRegisterMode ? "Daftar Akun Baru" : "Masuk Sistem"}
+              </button>
+            </form>
+
+            <div className="mt-4 text-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRegisterMode(!isRegisterMode);
+                  setLoginError(null);
+                }}
+                className="text-xs text-blue-600 hover:text-blue-700 hover:underline font-bold"
+              >
+                {isRegisterMode ? "Sudah punya akun? Masuk di sini" : "Belum punya akun? Daftar Sekarang"}
+              </button>
+            </div>
 
             {loginError && (
               <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-xl text-left text-[11px] text-red-700 font-medium whitespace-pre-wrap leading-relaxed shrink-0">
-                <div className="flex items-center gap-2 mb-1.5 text-red-800 font-bold">
+                <div className="flex items-center gap-2 mb-1.5 text-red-805 font-bold">
                   <span className="shrink-0 text-red-600">⚠️</span>
-                  <span>Detail Error Login:</span>
+                  <span>Detail Kegagalan:</span>
                 </div>
                 {loginError}
               </div>
@@ -689,6 +798,26 @@ export default function App() {
                     </h3>
                     <span className="text-[10px] text-slate-400 font-bold">{myRequests.length} Total</span>
                   </div>
+
+                  {!currentUser && (
+                    <div className="mb-4 p-3 bg-slate-50 border border-slate-100 rounded-xl space-y-1.5">
+                      <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider block">
+                        Lacak Pengajuan Saya:
+                      </label>
+                      <input
+                        type="email"
+                        value={searchEmail}
+                        onChange={(e) => {
+                          setSearchEmail(e.target.value);
+                          try {
+                            localStorage.setItem("guest_booking_emails", JSON.stringify([e.target.value]));
+                          } catch (_) {}
+                        }}
+                        placeholder="Ketik email Anda di sini..."
+                        className="px-2.5 py-1.5 border border-slate-200 outline-none focus:ring-1 focus:ring-blue-500 rounded-lg text-xs w-full bg-white font-medium text-slate-700"
+                      />
+                    </div>
+                  )}
 
                   <div className="space-y-3 max-h-[300px] overflow-y-auto custom-scrollbar">
                     {myRequests.length === 0 ? (
@@ -1000,7 +1129,7 @@ export default function App() {
                 <thead className="bg-slate-50 text-[10px] text-slate-500 font-bold uppercase border-b border-slate-200">
                   <tr>
                     <th className="py-4 px-5">Nama Lengkap</th>
-                    <th className="py-4 px-4">Email Google</th>
+                    <th className="py-4 px-4">Alamat Email</th>
                     <th className="py-4 px-4 text-center">Hak Akses Role</th>
                     {isSuperadmin && <th className="py-4 px-5 text-right">Opsi Ganti Akses</th>}
                   </tr>
@@ -1109,9 +1238,7 @@ export default function App() {
               <h1 className="font-display font-bold text-sm tracking-widest text-white leading-none">SCB-GO</h1>
               <p className="text-[9px] uppercase font-bold text-slate-400 mt-1 tracking-wider">Sekolah Cendekia BAZNAS</p>
             </div>
-          </div>
-
-          {/* Menus list layout */}
+                 {/* Menus list layout */}
           <nav className="space-y-1">
             <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest block mb-2 px-3">Main Navigation</span>
             
@@ -1145,25 +1272,29 @@ export default function App() {
               Pengajuan Kendaraan
             </button>
 
-            <button
-              onClick={() => setActiveTab("vehicles")}
-              className={`flex items-center gap-3 w-full px-3 py-2.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                activeTab === "vehicles" ? "bg-blue-600 text-white font-semibold shadow-inner shadow-blue-400/20" : "text-slate-400 hover:text-white hover:bg-slate-800"
-              }`}
-            >
-              <Car className="w-4 h-4 text-slate-400" />
-              Data Kendaraan
-            </button>
+            {isAdminRole && (
+              <button
+                onClick={() => setActiveTab("vehicles")}
+                className={`flex items-center gap-3 w-full px-3 py-2.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                  activeTab === "vehicles" ? "bg-blue-600 text-white font-semibold shadow-inner shadow-blue-400/20" : "text-slate-400 hover:text-white hover:bg-slate-800"
+                }`}
+              >
+                <Car className="w-4 h-4 text-slate-400" />
+                Data Kendaraan
+              </button>
+            )}
 
-            <button
-              onClick={() => setActiveTab("approvals")}
-              className={`flex items-center gap-3 w-full px-3 py-2.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                activeTab === "approvals" ? "bg-blue-600 text-white font-semibold shadow-inner shadow-blue-400/20" : "text-slate-400 hover:text-white hover:bg-slate-800"
-              }`}
-            >
-              <CheckSquare className="w-4 h-4 text-slate-400" />
-              Persetujuan Peminjaman
-            </button>
+            {isAdminRole && (
+              <button
+                onClick={() => setActiveTab("approvals")}
+                className={`flex items-center gap-3 w-full px-3 py-2.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                  activeTab === "approvals" ? "bg-blue-600 text-white font-semibold shadow-inner shadow-blue-400/20" : "text-slate-400 hover:text-white hover:bg-slate-800"
+                }`}
+              >
+                <CheckSquare className="w-4 h-4 text-slate-400" />
+                Persetujuan Peminjaman
+              </button>
+            )}
 
             <button
               onClick={() => setActiveTab("reports")}
@@ -1175,50 +1306,67 @@ export default function App() {
               Laporan Penggunaan
             </button>
 
-            <button
-              onClick={() => setActiveTab("users")}
-              className={`flex items-center gap-3 w-full px-3 py-2.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                activeTab === "users" ? "bg-blue-600 text-white font-semibold shadow-inner shadow-blue-400/20" : "text-slate-400 hover:text-white hover:bg-slate-800"
-              }`}
-            >
-              <Users className="w-4 h-4 text-slate-400" />
-              Kelola Pengguna
-            </button>
+            {isAdminRole && (
+              <button
+                onClick={() => setActiveTab("users")}
+                className={`flex items-center gap-3 w-full px-3 py-2.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                  activeTab === "users" ? "bg-blue-600 text-white font-semibold shadow-inner shadow-blue-400/20" : "text-slate-400 hover:text-white hover:bg-slate-800"
+                }`}
+              >
+                <Users className="w-4 h-4 text-slate-400" />
+                Kelola Pengguna
+              </button>
+            )}
 
-            <button
-              onClick={() => setActiveTab("settings")}
-              className={`flex items-center gap-3 w-full px-3 py-2.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                activeTab === "settings" ? "bg-blue-600 text-white font-semibold shadow-inner shadow-blue-400/20" : "text-slate-400 hover:text-white hover:bg-slate-800"
-              }`}
-            >
-              <Settings className="w-4 h-4 text-slate-400" />
-              Pengaturan Profil
-            </button>
+            {currentUser && (
+              <button
+                onClick={() => setActiveTab("settings")}
+                className={`flex items-center gap-3 w-full px-3 py-2.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                  activeTab === "settings" ? "bg-blue-600 text-white font-semibold shadow-inner shadow-blue-400/20" : "text-slate-400 hover:text-white hover:bg-slate-800"
+                }`}
+              >
+                <Settings className="w-4 h-4 text-slate-400" />
+                Pengaturan Profil
+              </button>
+            )}
           </nav>
         </div>
 
         {/* User Card inside bottom sidebar */}
         <div className="border-t border-slate-800 pt-4">
-          <div className="flex items-center gap-3 px-3 py-2.5 bg-slate-800/40 rounded-lg">
-            <img
-              src={currentUser.photoURL || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=70&h=70&q=80"}
-              alt="useravatar"
-              className="w-8 h-8 rounded-full border border-slate-700 shadow-sm"
-              referrerPolicy="no-referrer"
-            />
-            <div className="truncate flex-1">
-              <h4 className="text-xs font-bold text-white truncate leading-none">{currentUser.displayName}</h4>
-              <p className="text-[10px] text-slate-500 mt-1 truncate capitalize font-mono">{userProfile?.role || "user"}</p>
+          {!currentUser ? (
+            <div className="p-3 bg-slate-800/30 rounded-xl border border-slate-800 text-xs text-slate-400 text-center space-y-2">
+              <p className="font-semibold text-[10px] uppercase tracking-wide text-slate-500">Mode Publik (Tamu)</p>
+              <p className="text-[10px] leading-relaxed text-slate-400">Silakan isi formulir atau pantau kalender tanpa perlu daftar.</p>
+              <button
+                onClick={() => { setIsRegisterMode(false); setLoginError(null); }}
+                className="w-full flex items-center justify-center gap-1.5 py-1.5 mt-1 bg-blue-600 hover:bg-blue-500 text-white font-bold text-[11px] rounded-lg transition-all cursor-pointer"
+              >
+                <LogIn className="w-3.5 h-3.5" /> Masuk Superadmin
+              </button>
             </div>
-            <button
-              onClick={handleSignOut}
-              className="text-slate-400 hover:text-rose-400 p-1 rounded-md hover:bg-slate-800 transition-all text-xs font-bold cursor-pointer"
-              title="Keluar"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+          ) : (
+            <div className="flex items-center gap-3 px-3 py-2.5 bg-slate-800/40 rounded-lg">
+              <img
+                src={currentUser.photoURL || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=70&h=70&q=80"}
+                alt="useravatar"
+                className="w-8 h-8 rounded-full border border-slate-700 shadow-sm"
+                referrerPolicy="no-referrer"
+              />
+              <div className="truncate flex-1">
+                <h4 className="text-xs font-bold text-white truncate leading-none">{currentUser.displayName}</h4>
+                <p className="text-[10px] text-slate-500 mt-1 truncate capitalize font-mono">{userProfile?.role || "user"}</p>
+              </div>
+              <button
+                onClick={handleSignOut}
+                className="text-slate-400 hover:text-rose-400 p-1 rounded-md hover:bg-slate-800 transition-all text-xs font-bold cursor-pointer"
+                title="Keluar"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>     </div>
       </aside>
 
       {/* MOBILE HEADER RESPONSIVE VIEWER BAR */}
@@ -1237,24 +1385,35 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setNotificationOpen(!notificationOpen)}
-            className="relative p-1.5 hover:bg-slate-800 rounded-xl text-white transition-all text-xs cursor-pointer"
-          >
-            <Bell className="w-5 h-5 text-slate-350" />
-            {unreadNotifCount > 0 && (
-              <span className="absolute -top-1 -right-1 w-4.5 h-4.5 bg-rose-600 text-white font-semibold text-[9px] rounded-full flex items-center justify-center leading-none">
-                {unreadNotifCount}
-              </span>
-            )}
-          </button>
+          {currentUser ? (
+            <>
+              <button
+                onClick={() => setNotificationOpen(!notificationOpen)}
+                className="relative p-1.5 hover:bg-slate-800 rounded-xl text-white transition-all text-xs cursor-pointer"
+              >
+                <Bell className="w-5 h-5 text-slate-350" />
+                {unreadNotifCount > 0 && (
+                  <span className="absolute -top-1 -right-1 w-4.5 h-4.5 bg-rose-600 text-white font-semibold text-[9px] rounded-full flex items-center justify-center leading-none">
+                    {unreadNotifCount}
+                  </span>
+                )}
+              </button>
 
-          <img
-            src={currentUser.photoURL || "https://images.unsplash.com/photo-1544005313-94ddf0286df2"}
-            alt="avatar"
-            className="w-8 h-8 rounded-full border border-slate-700"
-            referrerPolicy="no-referrer"
-          />
+              <img
+                src={currentUser.photoURL || "https://images.unsplash.com/photo-1544005313-94ddf0286df2"}
+                alt="avatar"
+                className="w-8 h-8 rounded-full border border-slate-700"
+                referrerPolicy="no-referrer"
+              />
+            </>
+          ) : (
+            <button
+              onClick={() => { setIsRegisterMode(false); setLoginError(null); }}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white font-bold text-xs rounded-lg transition-all cursor-pointer"
+            >
+              <LogIn className="w-3.5 h-3.5 animate-pulse" /> Masuk Admin
+            </button>
+          )}
         </div>
       </header>
 
@@ -1304,12 +1463,12 @@ export default function App() {
                     { tab: "dashboard", icon: <LayoutDashboard className="w-4 h-4 text-slate-450" />, label: "Dashboard" },
                     { tab: "calendar", icon: <CalendarIcon className="w-4 h-4 text-slate-450" />, label: "Kalender Jadwal" },
                     { tab: "request", icon: <FileText className="w-4 h-4 text-slate-450" />, label: "Pengajuan" },
-                    { tab: "vehicles", icon: <Car className="w-4 h-4 text-slate-450" />, label: "Mobil Operasional" },
-                    { tab: "approvals", icon: <CheckSquare className="w-4 h-4 text-slate-450" />, label: "Alur Persetujuan" },
+                    isAdminRole ? { tab: "vehicles", icon: <Car className="w-4 h-4 text-slate-450" />, label: "Mobil Operasional" } : null,
+                    isAdminRole ? { tab: "approvals", icon: <CheckSquare className="w-4 h-4 text-slate-450" />, label: "Alur Persetujuan" } : null,
                     { tab: "reports", icon: <FileText className="w-4 h-4 text-slate-450" />, label: "Laporan" },
-                    { tab: "users", icon: <Users className="w-4 h-4 text-slate-450" />, label: "Hak Akses Akun" },
-                    { tab: "settings", icon: <Settings className="w-4 h-4 text-slate-450" />, label: "Akun Profil" }
-                  ].map((item) => (
+                    isAdminRole ? { tab: "users", icon: <Users className="w-4 h-4 text-slate-450" />, label: "Hak Akses Akun" } : null,
+                    currentUser ? { tab: "settings", icon: <Settings className="w-4 h-4 text-slate-450" />, label: "Akun Profil" } : null
+                  ].filter(Boolean).map((item: any) => (
                     <button
                       key={item.tab}
                       onClick={() => {
@@ -1327,25 +1486,40 @@ export default function App() {
                 </nav>
               </div>
 
-              <div className="border-t border-slate-800 pt-4 flex items-center justify-between">
-                <div className="flex items-center gap-2 truncate">
-                  <img
-                    src={currentUser.photoURL || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde"}
-                    alt="userp"
-                    className="w-8 h-8 rounded-full border border-slate-700"
-                    referrerPolicy="no-referrer"
-                  />
-                  <div className="truncate">
-                    <h4 className="text-xs font-bold text-white truncate leading-none">{currentUser.displayName}</h4>
-                    <p className="text-[10px] text-slate-500 mt-1 truncate capitalize font-mono leading-none">{userProfile?.role}</p>
+              <div className="border-t border-slate-800 pt-4">
+                {currentUser ? (
+                  <div className="flex items-center justify-between w-full">
+                    <div className="flex items-center gap-2 truncate">
+                      <img
+                        src={currentUser.photoURL || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde"}
+                        alt="userp"
+                        className="w-8 h-8 rounded-full border border-slate-700"
+                        referrerPolicy="no-referrer"
+                      />
+                      <div className="truncate">
+                        <h4 className="text-xs font-bold text-white truncate leading-none">{currentUser.displayName}</h4>
+                        <p className="text-[10px] text-slate-500 mt-1 truncate capitalize font-mono leading-none">{userProfile?.role}</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleSignOut}
+                      className="p-1 px-2.5 rounded-lg border border-slate-700 hover:bg-rose-650/10 text-slate-400 hover:text-rose-400 font-semibold transition-all text-xs cursor-pointer"
+                    >
+                      Keluar
+                    </button>
                   </div>
-                </div>
-                <button
-                  onClick={handleSignOut}
-                  className="p-1 px-2.5 rounded-lg border border-slate-700 hover:bg-rose-650/10 text-slate-400 hover:text-rose-400 font-semibold transition-all text-xs cursor-pointer"
-                >
-                  Keluar
-                </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      setIsRegisterMode(false);
+                      setLoginError(null);
+                    }}
+                    className="w-full flex items-center justify-center gap-2 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl cursor-pointer"
+                  >
+                    <LogIn className="w-4 h-4" /> Masuk Superadmin
+                  </button>
+                )}
               </div>
             </motion.div>
           </div>
@@ -1374,28 +1548,70 @@ export default function App() {
 
           <div className="flex items-center gap-4">
             {/* Real-time sync notifier indicator */}
-            <div className="flex items-center gap-1.5 border border-emerald-100 bg-emerald-50 text-emerald-700 p-1.5 px-3 rounded text-[10px] font-bold">
+            <div className="flex items-center gap-1.5 border border-emerald-100 bg-emerald-50 text-emerald-700 p-1.5 px-3 rounded text-[10px] font-bold font-mono">
               <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
               SINKRONISASI AKTIF
             </div>
 
-            {/* Notification drop indicator */}
-            <button
-              onClick={() => setNotificationOpen(!notificationOpen)}
-              className="relative p-2 hover:bg-slate-55 rounded-lg text-slate-500 transition-all border border-slate-200 cursor-pointer"
-            >
-              <Bell className="w-4 h-4 text-slate-600" />
-              {unreadNotifCount > 0 && (
-                <span className="absolute -top-1 -right-1 w-4 h-4 bg-rose-600 text-white font-bold text-[9px] rounded-full flex items-center justify-center leading-none">
-                  {unreadNotifCount}
-                </span>
-              )}
-            </button>
+            {currentUser ? (
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <img
+                    src={currentUser.photoURL || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=70&h=70&q=80"}
+                    alt="avatar"
+                    className="w-8 h-8 rounded-full border border-slate-200"
+                    referrerPolicy="no-referrer"
+                  />
+                  <div className="hidden lg:block text-left">
+                    <p className="text-xs font-bold text-slate-800 leading-none">{currentUser.displayName}</p>
+                    <span className="text-[9px] uppercase tracking-wider text-slate-400 font-bold block mt-0.5">{userProfile?.role}</span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setNotificationOpen(!notificationOpen)}
+                  className="relative p-2 hover:bg-slate-50 rounded-lg text-slate-500 transition-all border border-slate-200 cursor-pointer"
+                >
+                  <Bell className="w-4 h-4 text-slate-600" />
+                  {unreadNotifCount > 0 && (
+                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-rose-600 text-white font-bold text-[9px] rounded-full flex items-center justify-center leading-none">
+                      {unreadNotifCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => { setIsRegisterMode(false); setLoginError(null); }}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-md transition-all cursor-pointer"
+              >
+                <LogIn className="w-4 h-4" /> Masuk Superadmin
+              </button>
+            )}
           </div>
         </header>
 
         {/* Central tab contents workspace viewport container */}
         <section className="flex-1 p-4 md:p-6" id="central-tab-viewports">
+          {loginError && (
+            <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-900 space-y-2 relative">
+              <button 
+                onClick={() => setLoginError(null)}
+                className="absolute top-3 right-4 font-bold text-amber-600 hover:text-amber-800 text-xs"
+              >
+                ✕ Tutup
+              </button>
+              <div className="flex items-center gap-2 font-bold text-amber-950">
+                <AlertCircle className="w-4 h-4 text-amber-600" />
+                <span>Kendala Masuk (Login Error):</span>
+              </div>
+              <p className="leading-relaxed whitespace-pre-wrap font-medium">{loginError}</p>
+              {/* Add troubleshooting guidelines inside iframe */}
+              <div className="mt-3 bg-white/60 p-3 rounded-lg border border-amber-100 text-[11px] leading-normal text-amber-805">
+                <strong>💡 Solusi Pop-up Terblokir / Jendela Bermasalah:</strong> Browser mendeteksi jendela sign-in Google sebagai pop-up tak bersertifikat karena pratinjau ini berjalan di dalam bingkai (iframe). Klik tombol <strong>"Buka di Tab Baru" (Open in New Tab)</strong> berkelir biru di <strong>sudut kanan atas halaman AI Studio</strong> ini untuk membuka aplikasi di tab tersendiri - proses masuk Superadmin akan berjalan secara lancar, instan, & aman!
+              </div>
+            </div>
+          )}
           {renderTabContent()}
         </section>
       </main>

@@ -40,10 +40,10 @@ service cloud.firestore {
 
     // VEHICLES collection
     match /vehicles/{vehicleId} {
-      allow read: if isSignedIn();
-      allow create: if isAdmin(request.auth.uid) && isValidId(vehicleId) && isValidVehicle(request.resource.data);
-      allow update: if isAdmin(request.auth.uid) && isValidVehicle(request.resource.data);
-      allow delete: if isAdmin(request.auth.uid);
+      allow read: if true;
+      allow create: if isSignedIn() && isAdmin(request.auth.uid) && isValidId(vehicleId) && isValidVehicle(request.resource.data);
+      allow update: if isSignedIn() && isAdmin(request.auth.uid) && isValidVehicle(request.resource.data);
+      allow delete: if isSignedIn() && isAdmin(request.auth.uid);
     }
 
     function isValidVehicle(data) {
@@ -60,13 +60,17 @@ service cloud.firestore {
 
     // REQUESTS collection
     match /requests/{requestId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(requestId) && isValidRequest(request.resource.data) && request.resource.data.userId == request.auth.uid;
+      allow read: if true;
+      allow create: if isValidId(requestId) && isValidRequest(request.resource.data) && (
+        isSignedIn() ? request.resource.data.userId == request.auth.uid : request.resource.data.userId == 'guest_user'
+      );
       allow update: if isSignedIn() && (
         isAdmin(request.auth.uid) ||
         (request.resource.data.userId == request.auth.uid && resource.data.status == 'pending' && isValidRequest(request.resource.data))
       );
-      allow delete: if isAdmin(request.auth.uid) || (resource.data.userId == request.auth.uid && resource.data.status == 'pending');
+      allow delete: if isSignedIn() && (
+        isAdmin(request.auth.uid) || (resource.data.userId == request.auth.uid && resource.data.status == 'pending')
+      );
     }
 
     function isValidRequest(data) {

@@ -1,4 +1,4 @@
-import { useState, useMemo, FormEvent } from "react";
+import { useState, useMemo, useEffect, FormEvent } from "react";
 import { 
   Car, 
   Calendar, 
@@ -19,7 +19,7 @@ import { collection, query, where, getDocs } from "firebase/firestore";
 
 interface RequestFormProps {
   vehicles: Vehicle[];
-  currentUser: { uid: string; email: string; displayName?: string | null };
+  currentUser?: { uid: string; email: string; displayName?: string | null } | null;
   onSuccess: (request: Partial<VehicleRequest>) => void;
 }
 
@@ -30,13 +30,21 @@ export default function RequestForm({ vehicles, currentUser, onSuccess }: Reques
   const [startTime, setStartTime] = useState("");
   const [endDate, setEndDate] = useState("");
   const [endTime, setEndTime] = useState("");
-  const [pic, setPic] = useState(currentUser.displayName || "");
+  const [pic, setPic] = useState(currentUser?.displayName || "");
+  const [email, setEmail] = useState(currentUser?.email || "");
   const [activity, setActivity] = useState("");
   const [passengerCount, setPassengerCount] = useState<number>(0);
   const [passengerInput, setPassengerInput] = useState("");
   const [passengers, setPassengers] = useState<string[]>([]);
   const [destination, setDestination] = useState("");
   const [additionalNotes, setAdditionalNotes] = useState("");
+
+  useEffect(() => {
+    if (currentUser) {
+      setPic(currentUser.displayName || "");
+      setEmail(currentUser.email || "");
+    }
+  }, [currentUser]);
 
   // States
   const [loading, setLoading] = useState(false);
@@ -111,6 +119,7 @@ export default function RequestForm({ vehicles, currentUser, onSuccess }: Reques
     if (!startDate || !startTime) return setErrorMsg("Silakan masukkan tanggal dan jam mulai peminjaman.");
     if (!endDate || !endTime) return setErrorMsg("Silakan masukkan tanggal dan jam selesai peminjaman.");
     if (!pic.trim()) return setErrorMsg("Silakan isi nama Penanggung Jawab.");
+    if (!email.trim() || !email.includes("@")) return setErrorMsg("Silakan masukkan email pemohon yang sah.");
     if (!activity.trim()) return setErrorMsg("Silakan isi tujuan kegiatan.");
     if (passengerCount < 0) return setErrorMsg("Jumlah penumpang tidak boleh kurang dari 0.");
     if (!destination.trim()) return setErrorMsg("Silakan isi tujuan perjalanan.");
@@ -164,9 +173,9 @@ export default function RequestForm({ vehicles, currentUser, onSuccess }: Reques
         additionalNotes: additionalNotes.trim(),
         status: "pending" as const,
         rejectionReason: "",
-        userId: currentUser.uid,
-        userEmail: currentUser.email,
-        userName: currentUser.displayName || currentUser.email.split("@")[0],
+        userId: currentUser ? currentUser.uid : "guest_user",
+        userEmail: email.trim(),
+        userName: pic.trim(),
       };
 
       await onSuccess(requestPayload);
@@ -334,6 +343,24 @@ export default function RequestForm({ vehicles, currentUser, onSuccess }: Reques
                     value={pic}
                     onChange={(e) => setPic(e.target.value)}
                     placeholder="Nama ustadz / ustadzah / guru"
+                    className="pl-10 pr-3 py-2 text-xs w-full rounded-xl border border-slate-200 bg-slate-50/50 outline-none focus:ring-1 focus:ring-blue-500 font-medium text-slate-700"
+                    required
+                  />
+                </div>
+              </div>
+
+              {/* Email pemohon input */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-600 block uppercase tracking-wider">
+                  7. Email Pemohon <span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3.5 top-2 text-slate-400 font-bold font-mono text-xs">@</span>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="Masukkan email Anda"
                     className="pl-10 pr-3 py-2 text-xs w-full rounded-xl border border-slate-200 bg-slate-50/50 outline-none focus:ring-1 focus:ring-blue-500 font-medium text-slate-700"
                     required
                   />
